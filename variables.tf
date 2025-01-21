@@ -7,3 +7,7 @@ variable "bucket_name" {
   description = "The name of the S3 bucket"
   default     = "example-bucket-terraform"
 }
+
+variable "repository_branch" {
+  description = "The branch of the repository"
+}

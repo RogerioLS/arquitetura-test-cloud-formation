@@ -21,7 +21,6 @@ phases:
         - echo "terraform" { > backend.tf
         - echo "   backend \"s3\" {} " >> backend.tf
         - echo "}" >> backend.tf
-        - echo "${TF_VAR_ArtifactsBucket}"
         - terraform init -input=false --backend-config="bucket=${TFSTATEBUCKET}" --backend-config="key=${SOURCEREPONAME}-${SOURCEREPOBRANCH}.tfstate" --backend-config="region=${REGION}"
         - terraform apply -input=false -var="repository_branch=${SOURCEREPOBRANCH}" -auto-approve
     post_build:

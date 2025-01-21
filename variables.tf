@@ -5,7 +5,7 @@ variable "region" {
 
 variable "bucket_name" {
   description = "The name of the S3 bucket"
-  default     = "example-bucket-terraform"
+  default     = "example-bucket-terraform-teste"
 }
 
 variable "repository_branch" {

@@ -1,0 +1,503 @@
+Description: Nested stack que faz a criacao dos recursos da pipeline de cada ambiente
+
+Parameters:
+  pSourceRepoName:
+    Type: String
+    Description: Nome do repositorio GitHub a ser usado para controle de versão
+    MinLength: 0
+    MaxLength: 100
+
+  pSourceRepoBranch:
+    Type: String
+    AllowedValues:
+      - dev
+      - hml
+      - prd
+    Description: Nome do branch do repositorio GitHub para o ambiente de CI/CD
+
+  GitHubOwner:
+    Type: String
+    Description: Nome do proprietorio do repositorio GitHub
+
+  GitHubBranch:
+    Type: String
+    Description: Nome do branch do repositorio GitHub
+
+  GitHubToken:
+    Type: String
+    Description: Token OAuth do GitHub para autenticacao com o repositorio
+
+  GitHubRepo:
+    Type: String
+    Description: Nome do repositorio GitHub
+
+  pClientName:
+    Type: String
+    Default: tcc-detect-plate
+    Description: Nome do projeto
+
+  pEmpresa:
+    Type: String
+    Default: rogerio-fabiana
+    Description: Nome da empresa criando o projeto
+
+  pRegion:
+    Type: String
+    Description: Regiao onde o pipeline será criado
+    Default: "us-east-1"
+
+  pTFVersion:
+    Type: String
+    Description: Versão do Terraform a ser utilizada
+    Default: "0.12.29"
+  
+  rTFStateBucket:
+    Type: String
+    Default: ""
+    Description: ARN do bucket do S3 a ser utilizado para armazenar arquivos de estado terraform
+
+  rTriggerRole:
+    Type: String
+    Default: ""
+    Description: ARN da role a ser usada pelo trigger do CodePipeline do projeto
+  
+  rCodeBuildRoleArn:
+    Type: String
+    Default: ""
+    Description: ARN da role a ser usada pelo code build
+  
+  rCodePipelineServiceRole:
+    Type: String
+    Default: ""
+    Description: ARN da role a ser usada pelo fluxo do CodePipeline do projeto
+  
+  rArtifactBucket:
+    Type: String
+    Default: ""
+    Description: ARN do bucket do S3 a ser utilizado para armazenar artefatos do pipeline de CI/CD
+  
+  rLambdaRoleARN:
+    Type: String
+    Default: ""
+    Description: ARN do Role Lambda (deixe vazio se não for criar)
+
+Mappings:
+  App:
+    Name:
+      CamelCase: "detectPlate"
+      SnakeCase: "detect_plate"
+      PascalCase: "DetectPlate"
+      KebabCase: "detect-plate"
+  StageNames:
+    dev:
+      PascalCase: "Dev"
+      UpperCase: "DEV"
+    hml:
+      PascalCase: "Hml"
+      UpperCase: "HML"
+    prd:
+      PascalCase: "Prd"
+      UpperCase: "PRD"
+
+Conditions:
+  CreateBucket: !Equals [!Ref rArtifactBucket, ""]
+  RelocateTFState: !Equals [!Ref rTFStateBucket, ""]
+  CreatePipelineRole: !Equals [!Ref rCodePipelineServiceRole, ""]
+  CreateBuildRole: !Equals [!Ref rCodeBuildRoleArn, ""]
+  CreateTriggerRole: !Equals [!Ref rTriggerRole, ""]
+  CreateRoleLambdaAI: !Equals [!Ref rLambdaRoleARN, ""]
+
+Resources:
+
+  DeployArtifactsBucket:
+    Type: "AWS::S3::Bucket"
+    Condition: CreateBucket
+    Properties:
+      BucketName: !Sub
+        - "${AWS::AccountId}-${AppName}-${pSourceRepoBranch}"
+        - AppName: !FindInMap [ "App", "Name", "KebabCase" ]
+
+  CodePipelineRole:
+    Type: "AWS::IAM::Role"
+    Condition: CreatePipelineRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub
+            - "${AppName}CodePipelinePolicy"
+            - AppName: !FindInMap [ "App", "Name", "PascalCase" ]
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+                  - "s3:ListBucket"
+                Resource:
+                  - !GetAtt "DeployArtifactsBucket.Arn"
+                  - !Sub "${DeployArtifactsBucket.Arn}/*"
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:DeleteStack"
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:UpdateStack"
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:DeleteChangeSet"
+                  - "cloudformation:DescribeChangeSet"
+                  - "cloudformation:ExecuteChangeSet"
+                  - "cloudformation:SetStackPolicy"
+                  - "cloudformation:DescribeStackEvents"
+                  - "iam:PassRole"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuildBatches"
+                  - "codebuild:StartBuildBatch"
+                Resource: "*"
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Condition: CreateBuildRole
+    Properties:
+      RoleName: !Sub 
+        - "${AppName}_RoleCodeBuild_${Env}"
+        - AppName: !FindInMap [ "App", "Name", "PascalCase" ]
+          Env: !FindInMap [ "StageNames", !Ref pSourceRepoBranch, "PascalCase" ]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: !Sub 
+          - "${AppName}CodeBuildPolicy${Env}"
+          - AppName: !FindInMap [ "App", "Name", "PascalCase" ]
+            Env: !FindInMap [ "StageNames", !Ref pSourceRepoBranch, "PascalCase" ]
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+              - Effect: "Allow"
+                Action:
+                  - "s3:*"
+                Resource:
+                  - !GetAtt "DeployArtifactsBucket.Arn"
+                  - !Sub "${DeployArtifactsBucket.Arn}/*"
+              - Effect: "Allow"
+                Action:
+                  - "codebuild:CreateReportGroup"
+                  - "codebuild:CreateReport"
+                  - "codebuild:UpdateReport"
+                  - "codebuild:BatchPutTestCases"
+                  - "codebuild:BatchPutCodeCoverages"
+                Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/*"
+              - Effect: "Allow"
+                Action:
+                  - "cloudformation:ValidateTemplate"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "ssm:GetParameter"
+                Resource: !Sub
+                  - "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Env}/${AppName}/*"
+                  - AppName: !FindInMap [ "App", "Name", "PascalCase" ]
+                    Env: !FindInMap [ "StageNames", !Ref pSourceRepoBranch, "PascalCase" ]
+              - Effect: "Allow"
+                Action:
+                  - "iam:CreateRole"
+                  - "iam:AttachRolePolicy"
+                  - "iam:PassRole"
+                  - "iam:GetRole"
+                  - "codebuild:CreateProject"
+                  - "dynamodb:CreateTable"
+                  - "s3:CreateBucket"
+                  - "lex:PutBot"
+                  - "lambda:CreateFunction"
+                  - "apigateway:POST"
+                  - "ecr:CreateRepository"
+                  - "ecr:DescribeRepositories"
+                  - "ecr:DescribeImages"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "ecr:ListTagsForResource"
+                  - "ecr:ListImages"
+                  - "ecr:PutImage"
+                  - "ecr:BatchCheckLayerAvailability"
+                Resource: "*"
+
+  TriggerRole:
+    Type: AWS::IAM::Role
+    Condition: CreateTriggerRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: eb-pipeline-execution
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref rPipeline ] ]
+
+  rGitHubRepoTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${pEmpresa}-${pClientName}-githubtrigger-${pSourceRepoBranch}"
+      Description: Trigger the pipeline on change to repo/branch
+      EventPattern:
+        source:
+          - "aws.codepipeline"
+        detail-type:
+          - "CodePipeline Pipeline Execution State Change"
+        resources: 
+          - !Ref rPipeline
+        detail:
+          state:
+            - "SUCCEEDED"
+      RoleArn: !If 
+        - CreateTriggerRole
+        - !GetAtt TriggerRole.Arn
+        - !Ref rTriggerRole
+      State: ENABLED
+      Targets: 
+        - Arn: !Sub arn:aws:codepipeline:${pRegion}:${AWS::AccountId}:${rPipeline}
+          Id: !Sub "${pEmpresa}-${pClientName}-${pSourceRepoBranch}-Pipeline"
+          RoleArn: !If 
+            - CreateTriggerRole
+            - !GetAtt TriggerRole.Arn
+            - !Ref rTriggerRole
+
+  AppConfigParameterStore:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Description: !Sub
+        - "JSON string that defines the resource configurations in the ${pSourceRepoBranch} environment"
+        - Env: !Ref pSourceRepoBranch
+      Name: !Sub
+        - "/${pEmpresa}/${pClientName}/datalake/config/JSON/${pSourceRepoBranch}"
+        - Env: !Ref pSourceRepoBranch
+      Value: "{}"
+      Type: "String"
+
+  rTFPlanCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+        Name: !Sub ${pEmpresa}-${pClientName}-tf-plan-${pSourceRepoBranch}
+        Description: CodeBuild Project to plan terraform templates
+        Artifacts:
+          Type: CODEPIPELINE
+        Environment:
+          Type: LINUX_CONTAINER
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: aws/codebuild/amazonlinux2-x86_64-standard:2.0
+          EnvironmentVariables:
+            - Value: !Ref pTFVersion
+              Name: TFVERSION
+            - Value: !Ref pSourceRepoBranch
+              Name: SOURCEREPOBRANCH
+            - Value: !If 
+              - RelocateTFState
+              - !If
+                - CreateBucket
+                - !Ref DeployArtifactsBucket
+                - !Ref rArtifactBucket
+              - !Ref rTFStateBucket
+              Name: TFSTATEBUCKET
+            - Value: !Sub "${pRegion}"
+              Name: REGION
+        ServiceRole: !If 
+          - CreateBuildRole
+          - !GetAtt CodeBuildRole.Arn
+          - !Ref rCodeBuildRoleArn
+        Source:
+            Type: CODEPIPELINE
+            BuildSpec: codebuild-buildspec-plan.yml
+
+  rTFApplyCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+        Name: !Sub ${pEmpresa}-${pClientName}-tf-apply-${pSourceRepoBranch}
+        Description: CodeBuild Project to apply terraform templates
+        Artifacts:
+          Type: CODEPIPELINE
+        Environment:
+          Type: LINUX_CONTAINER
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: aws/codebuild/amazonlinux2-x86_64-standard:2.0
+          EnvironmentVariables:
+            - Value: !Ref pTFVersion
+              Name: TFVERSION
+            - Value: !Ref pSourceRepoBranch
+              Name: SOURCEREPOBRANCH
+            - Value: !If 
+              - RelocateTFState
+              - !If
+                - CreateBucket
+                - !Ref DeployArtifactsBucket
+                - !Ref rArtifactBucket
+              - !Ref rTFStateBucket
+              Name: TFSTATEBUCKET
+            - Value: !Sub "${pRegion}"
+              Name: REGION
+        ServiceRole: !If 
+          - CreateBuildRole
+          - !GetAtt CodeBuildRole.Arn
+          - !Ref rCodeBuildRoleArn
+        Source:
+            Type: CODEPIPELINE
+            BuildSpec: codebuild-buildspec-apply.yml
+
+  rPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !If
+        - CreatePipelineRole
+        - !GetAtt CodePipelineRole.Arn
+        - !Ref rCodePipelineServiceRole
+      RestartExecutionOnUpdate: False
+      ArtifactStore:
+        Type: S3
+        Location: !If
+          - CreateBucket
+          - !Ref DeployArtifactsBucket
+          - !Ref rArtifactBucket
+      Name: !Sub ${pSourceRepoName}-Pipeline-${pSourceRepoBranch}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: "1"
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: TerrafromActions
+          Actions:
+            - Name: terraform-plan
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref rTFPlanCodeBuildProject
+                EnvironmentVariables:
+                  !Sub 
+                    - |
+                      [
+                        {"name": "AppConfigSsmParameterName", "value": "${AppConfigParameterStore}"},
+                        {"name": "S3Bucket", "value": "${ArtifactBucket}"},
+                        {"name": "TF_VAR_ArtifactsBucket", "value": "${ArtifactBucket}"},
+                        {"name": "Stage", "value": "${pSourceRepoBranch}"}
+                      ]
+                    - ArtifactBucket: !If
+                      - CreateBucket
+                      - !Ref DeployArtifactsBucket
+                      - !Ref rArtifactBucket
+                BatchEnabled: false
+              RunOrder: 1
+              InputArtifacts:
+                - Name: SourceOutput
+            - Name: approval-terraform-plan
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: "1"
+                Provider: Manual
+              RunOrder: 2
+            - Name: terraform-apply
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref rTFApplyCodeBuildProject
+                EnvironmentVariables:
+                  !Sub 
+                    - |
+                      [
+                        {"name": "AppConfigSsmParameterName", "value": "${AppConfigParameterStore}"},
+                        {"name": "S3Bucket", "value": "${ArtifactBucket}"},
+                        {"name": "TF_VAR_ArtifactsBucket", "value": "${ArtifactBucket}"},
+                        {"name": "Stage", "value": "${pSourceRepoBranch}"}
+                      ]
+                    - ArtifactBucket: !If
+                      - CreateBucket
+                      - !Ref DeployArtifactsBucket
+                      - !Ref rArtifactBucket
+                BatchEnabled: false
+              RunOrder: 3
+              InputArtifacts:
+                - Name: SourceOutput
+
+Outputs:
+  PipelineName:
+    Description: "Nome da pipeline criada"
+    Value: !Ref rPipeline
+  ArtifactBucketName:
+    Description: "Nome do bucket de artefatos"
+    Value: !If
+      - CreateBucket
+      - !Ref DeployArtifactsBucket
+      - !Ref rArtifactBucket
+  CodePipelineRoleArn:
+    Description: "ARN da role do CodePipeline"
+    Value: !If
+      - CreatePipelineRole
+      - !GetAtt CodePipelineRole.Arn
+      - !Ref rCodePipelineServiceRole
+  CodeBuildRoleArn:
+    Description: "ARN da role do CodeBuild"
+    Value: !If
+      - CreateBuildRole
+      - !GetAtt CodeBuildRole.Arn
+      - !Ref rCodeBuildRoleArn
+  TriggerRoleArn:
+    Description: "ARN da role do Trigger"
+    Value: !If
+      - CreateTriggerRole
+      - !GetAtt TriggerRole.Arn
+      - !Ref rTriggerRole

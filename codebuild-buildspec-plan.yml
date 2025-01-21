@@ -1,0 +1,30 @@
+version: 0.2
+
+phases:
+
+    install:
+        runtime-versions:
+            python: 3.8
+        commands:
+        - cd /usr/bin
+        - curl -s -qL -o terraform.zip "https://releases.hashicorp.com/terraform/$TFVERSION/terraform_$(echo $TFVERSION)_linux_amd64.zip"
+        - unzip -o terraform.zip
+    build:
+        commands:
+        - echo "${TFSTATEBUCKET}"
+        - echo "${SOURCEREPONAME}"
+        - echo "${SOURCEREPOBRANCH}"
+        - echo "${REGION}"
+        - echo "${BASH_VERSION}"
+        - echo Terraform deployment started on `date`
+        - cd "$CODEBUILD_SRC_DIR"
+        - ls
+        - echo "terraform" { > backend.tf
+        - echo "   backend \"s3\" {} " >> backend.tf
+        - echo "}" >> backend.tf
+        - echo "${TF_VAR_ArtifactsBucket}"
+        - terraform init -input=false --backend-config="bucket=${TFSTATEBUCKET}" --backend-config="key=${SOURCEREPONAME}-${SOURCEREPOBRANCH}.tfstate" --backend-config="region=${REGION}"
+        - terraform plan -input=false -var="repository_branch=${SOURCEREPOBRANCH}"
+    post_build:
+        commands:
+        - echo "Terraform completed on `date`"
